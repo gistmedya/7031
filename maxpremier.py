@@ -33,7 +33,7 @@ RTMP_URL = "rtmp://ssh101.bozztv.com:1935/ssh101"
 STREAM_KEY = os.getenv("STREAM_KEY") or "maxpremier"
 RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 
-M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/mpremiuum.m3u"
+M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/SD.m3u"
 LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787671958979.png"
 
 STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "maxpremier.json")
@@ -429,11 +429,11 @@ def build_reader_command(target_url, seek_seconds):
 
     title_drawtext = (
         f"drawtext=textfile='title.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
-        f"fontcolor=white@{TEXT_OPACITY}:fontsize=19:x=w-tw-20:y=h-th-20"
+        f"fontcolor=white@{TEXT_OPACITY}:fontsize=0:x=w-tw-0:y=h-th-0"
     )
     time_drawtext = (
         f"drawtext=textfile='time.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
-        f"fontcolor=white@{TEXT_OPACITY}:fontsize=18:x=20:y=h-th-20"
+        f"fontcolor=white@{TEXT_OPACITY}:fontsize=0:x=0:y=h-th-0"
     )
     base_scale = (
         '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
