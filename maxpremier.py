@@ -444,7 +444,8 @@ def build_reader_command(target_url, seek_seconds):
 
     has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
     if has_logo:
-        logo_inputs = ['-i', 'logo.png']
+        # Sabit görsellerin yayında kaybolmaması için -loop 1 eklendi
+        logo_inputs = ['-loop', '1', '-i', 'logo.png']
         filter_str = (
             base_scale +
             f'[{logo_index}:v]scale=-2:85,format=rgba,colorchannelmixer=aa={LOGO_OPACITY}[logo1];'
