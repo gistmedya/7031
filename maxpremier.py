@@ -15,6 +15,13 @@ MİMARİ (RTMP kalıcı):
   Return code 0 tek başına yeterli değildir. Kaynak erken EOF verirse FFmpeg yine 0 döner.
   Bu yüzden film ancak toplam süreye (END_TOLERANCE_SECONDS payıyla) ulaşıldıysa bitmiş sayılır.
   Süre okunamadıysa da en az 60 saniye kesintisiz yayın yapılmış olması şartı aranır.
+
+LOGO DÜZELTMESİ:
+  Eski kodda '-ss' parametresi film girişinden SONRA, logo.png girişinden ÖNCE yazılıyordu.
+  FFmpeg bu durumda -ss'i bir sonraki girişe (logo.png) uygular: logo tek karelik bir resim
+  olduğu için ileri sarılınca hiç kare kalmıyor ve logo ekrana gelmiyordu (üstelik film de
+  istenen saniyeden başlamıyordu). Artık -ss, ilgili film girişinin hemen ÖNÜNE yazılıyor,
+  logo girişine hiç uygulanmıyor.
 """
 
 import json
@@ -272,6 +279,25 @@ def get_m3u_playlist(m3u_url):
     return [{"url": m3u_url, "title": os.path.basename(m3u_url)}]
 
 
+def check_logo_file(path='logo.png'):
+    """İndirilen dosyanın FFmpeg tarafından gerçekten okunabilir bir resim olduğunu doğrular."""
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+             '-show_entries', 'stream=codec_name,width,height',
+             '-of', 'csv=p=0', path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15
+        )
+        info = result.stdout.strip()
+        if result.returncode == 0 and info:
+            print(f"🖼️ Logo doğrulandı (codec,genişlik,yükseklik): {info}")
+            return True
+        print(f"⚠️ Logo dosyası geçerli bir resim değil! ffprobe: {result.stderr.strip()[:200]}")
+    except Exception as e:
+        print(f"⚠️ Logo doğrulama hatası: {e}")
+    return False
+
+
 def download_logo():
     try:
         print(f"📥 Logo indiriliyor: {LOGO_URL}")
@@ -281,6 +307,7 @@ def download_logo():
             with open('logo.png', 'wb') as f:
                 f.write(response.content)
             print("✅ Logo başarıyla 'logo.png' olarak kaydedildi.")
+            check_logo_file('logo.png')
         else:
             print(f"⚠️ Logo indirilemedi! HTTP Status: {response.status_code}")
     except Exception as e:
@@ -395,19 +422,21 @@ def make_input_options(url):
 
 
 def build_reader_command(target_url, seek_seconds):
-    # SEEK PARAMETRESİ (Doğru Konum: -i parametresinden SONRA - Output Seeking)
+    # SEEK PARAMETRESİ: FFmpeg'de giriş seçenekleri, ait oldukları '-i'nin ÖNÜNE yazılır.
+    # (Eski kodda -ss, '-i film'den sonra yazıldığı için logo.png girişine uygulanıyordu
+    #  ve logo kayboluyordu.) Artık -ss sadece film/ses girişlerine uygulanır.
     seek_args = ['-ss', str(int(seek_seconds))] if seek_seconds > 0 else []
 
     if ";" in target_url:
         video_url, audio_url = (p.strip() for p in target_url.split(";", 1))
         input_args = (
-            make_input_options(video_url) + ['-i', video_url] + seek_args +
-            make_input_options(audio_url) + ['-i', audio_url] + seek_args
+            make_input_options(video_url) + seek_args + ['-i', video_url] +
+            make_input_options(audio_url) + seek_args + ['-i', audio_url]
         )
         audio_map = ['-map', '1:a:0?']
         logo_index = 2
     else:
-        input_args = make_input_options(target_url) + ['-i', target_url] + seek_args
+        input_args = make_input_options(target_url) + seek_args + ['-i', target_url]
         audio_map = ['-map', '0:a:0?']
         logo_index = 1
 
@@ -426,16 +455,17 @@ def build_reader_command(target_url, seek_seconds):
 
     has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
     if has_logo:
+        # Logo girişine seek/-re uygulanmaz; tek karelik resim son kare tekrarlanarak overlay edilir.
         logo_inputs = ['-i', 'logo.png']
-        # Logo ölçekleme ve şeffaflık filmi garantili çalışacak şekilde düzeltildi (-2 genişlik, format=rgba, colorchannelmixer)
         filter_str = (
             base_scale +
             f'[{logo_index}:v]scale=-2:85,format=rgba,colorchannelmixer=aa={LOGO_OPACITY}[logo1];'
-            '[main][logo1]overlay=W-w-50:50[tmp1];'
+            '[main][logo1]overlay=W-w-50:50:eof_action=repeat:format=auto[tmp1];'
             f'[tmp1]{title_drawtext}[tmp2];'
             f'[tmp2]{time_drawtext}[v]'
         )
     else:
+        print("⚠️ logo.png bulunamadı/boş, yayın logosuz başlatılıyor.")
         logo_inputs = []
         filter_str = (
             base_scale +
@@ -534,14 +564,14 @@ def run_reader(command, output, base_seconds, total_duration_sec, ctx):
 def is_really_finished(result, base_seconds, total_duration_sec):
     if result.returncode != 0:
         return False
-    
+
     played_seconds = result.stream_seconds - base_seconds
     if played_seconds < 10:
         return False
 
     if total_duration_sec > 0:
         return result.stream_seconds >= total_duration_sec - END_TOLERANCE_SECONDS
-    
+
     return played_seconds > 60
 
 
