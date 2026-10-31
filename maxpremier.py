@@ -412,18 +412,19 @@ def make_input_options(url):
 
 
 def build_reader_command(target_url, seek_seconds):
+    # SEEK PARAMETRESİ (Doğru Konum: -i parametresinden SONRA - Output Seeking)
     seek_args = ['-ss', str(int(seek_seconds))] if seek_seconds > 0 else []
 
     if ";" in target_url:
         video_url, audio_url = (p.strip() for p in target_url.split(";", 1))
         input_args = (
-            make_input_options(video_url) + seek_args + ['-i', video_url] +
-            make_input_options(audio_url) + seek_args + ['-i', audio_url]
+            make_input_options(video_url) + ['-i', video_url] + seek_args +
+            make_input_options(audio_url) + ['-i', audio_url] + seek_args
         )
         audio_map = ['-map', '1:a:0?']
         logo_index = 2
     else:
-        input_args = make_input_options(target_url) + seek_args + ['-i', target_url]
+        input_args = make_input_options(target_url) + ['-i', target_url] + seek_args
         audio_map = ['-map', '0:a:0?']
         logo_index = 1
 
