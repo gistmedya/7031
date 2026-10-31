@@ -273,7 +273,6 @@ def get_m3u_playlist(m3u_url):
 
 
 def download_logo():
-    """Logo indirme süreci loglanarak iyileştirildi."""
     try:
         print(f"📥 Logo indiriliyor: {LOGO_URL}")
         response = requests.get(LOGO_URL, headers={'User-Agent': STREAM_USER_AGENT}, timeout=15)
@@ -428,10 +427,10 @@ def build_reader_command(target_url, seek_seconds):
     has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
     if has_logo:
         logo_inputs = ['-i', 'logo.png']
-        # Logo üst sağ köşeye yerleştirildi ve format/scale hatası riskine karşı optimize edildi
+        # Logo ölçekleme ve şeffaflık filmi garantili çalışacak şekilde düzeltildi (-2 genişlik, format=rgba, colorchannelmixer)
         filter_str = (
             base_scale +
-            f'[{logo_index}:v]scale=-1:85,format=rgba[logo1];'
+            f'[{logo_index}:v]scale=-2:85,format=rgba,colorchannelmixer=aa={LOGO_OPACITY}[logo1];'
             '[main][logo1]overlay=W-w-50:50[tmp1];'
             f'[tmp1]{title_drawtext}[tmp2];'
             f'[tmp2]{time_drawtext}[v]'
