@@ -17,7 +17,7 @@ STREAM_KEY = os.getenv("STREAM_KEY") or "maxyerli"
 RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 
 M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/gistmedya/0101/refs/heads/main/yerli2.m3u"
-LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/gistmedya/0101/refs/heads/main/Maxyerli1.png"
+LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/gistmedya/0101/refs/heads/Maxyerli1.png"
 
 STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "yesilcam.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
@@ -25,21 +25,21 @@ GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 STREAM_REFERER = "https://vidmody.com/"
 
-# Logo ve yazı opaklık ayarları (0.0 - 1.0 arası)
+# Logo and text opacity settings (0.0 - 1.0)
 LOGO_OPACITY = float(os.getenv("LOGO_OPACITY", "1.0"))
 TEXT_OPACITY = float(os.getenv("TEXT_OPACITY", "1.0"))
 BOLD_FONT_PATH = os.getenv("BOLD_FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 
-# Decoder'ı tek thread'e zorlamak için
+# Decoder threads constraint
 DECODER_THREADS = os.getenv("DECODER_THREADS", "1")
 
-# Watchdog Zaman Aşımları (Saniye)
-WATCHDOG_STARTUP_SECONDS = int(os.getenv("WATCHDOG_STARTUP_SECONDS", "60"))  # İlk açılış toleransı
-WATCHDOG_TIMEOUT_SECONDS = int(os.getenv("WATCHDOG_TIMEOUT_SECONDS", "45"))  # Yayın ortası donma toleransı
+# Watchdog Timeouts (Seconds)
+WATCHDOG_STARTUP_SECONDS = int(os.getenv("WATCHDOG_STARTUP_SECONDS", "60"))
+WATCHDOG_TIMEOUT_SECONDS = int(os.getenv("WATCHDOG_TIMEOUT_SECONDS", "45"))
 
-# Tolerans ve Geri Sarma Ayarları
-END_TOLERANCE_SECONDS = 15  # Bitişe bu kadar saniye kaldıysa film gerçekten bitmiş sayılır
-SEEK_BACKOFF_SECONDS = 10   # Sürekli çöken noktada kaç saniye geriye sarılacak
+# Tolerance and Rewind Settings
+END_TOLERANCE_SECONDS = 15
+SEEK_BACKOFF_SECONDS = 10
 LINK_CHANGE_REWIND_SECONDS = int(os.getenv("LINK_CHANGE_REWIND_SECONDS", "15"))
 
 # Erken kopma sonrası geri sarma / atlama ayarları
@@ -50,7 +50,7 @@ NEAR_END_REMAINING_SECONDS = int(os.getenv("NEAR_END_REMAINING_SECONDS", "120"))
 
 
 def format_hms(total_seconds):
-    """Saniyeyi SS:DD:SS formatına çevirir."""
+    """Converts seconds to HH:MM:SS format."""
     total_seconds = max(0, int(total_seconds))
     hrs = total_seconds // 3600
     mins = (total_seconds % 3600) // 60
@@ -58,11 +58,11 @@ def format_hms(total_seconds):
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
 
-# ===================== KALICI RTMP YAYINCISI =====================
+# ===================== PERSISTENT RTMP PUBLISHER =====================
 class RtmpPublisher:
     """
-    RTMP sunucusuna SÜREKLİ bağlı kalan tek bir FFmpeg süreci.
-    Filmleri kodlayan FFmpeg süreçleri çıktılarını (MPEG-TS) bu sürecin stdin'ine yazar.
+    Single persistent FFmpeg process connected to the RTMP server.
+    Encoding FFmpeg processes write MPEG-TS output into this process's stdin.
     """
 
     def __init__(self):
@@ -142,7 +142,7 @@ def prefetch_duration(stream_url):
 
 
 def get_video_duration_ffprobe(video_url):
-    """FFprobe ile videonun GERÇEK toplam süresini çeker."""
+    """Fetches real total video duration using ffprobe."""
     cmd = [
         'ffprobe',
         '-v', 'error',
@@ -163,17 +163,12 @@ def get_video_duration_ffprobe(video_url):
 
 
 def is_really_finished(current_sec, total_sec):
-    """
-    Sadece FFmpeg'in 0 vermesine güvenmez.
-    İzlenen sürenin toplam süreye ulaşıp ulaşmadığını kontrol eder (Sahte Bitiş Koruması).
-    """
     if total_sec <= 0:
-        return True  # Toplam süre bilinmiyorsa FFmpeg'in 0 çıkışına güvenmek zorundayız.
+        return True
     return (total_sec - current_sec) <= END_TOLERANCE_SECONDS
 
 
 def get_local_state():
-    """Yerel state dosyasından son durumu okur."""
     if os.path.exists(STATE_FILE_NAME):
         if os.path.getsize(STATE_FILE_NAME) == 0:
             return 0, 0, "", ""
@@ -192,7 +187,6 @@ def get_local_state():
 
 
 def update_local_state(index, seconds, url="", title=""):
-    """Atomik yazım mantığıyla son konumu kaydeder."""
     tmp_file = f"{STATE_FILE_NAME}.tmp"
     try:
         data = {
@@ -312,7 +306,6 @@ def start_m3u_stream():
         target_stream_url = current_item["url"]
         film_title = current_item["title"]
 
-        # Link Değişikliği / Süre Rewind Kontrolü
         if last_seconds > 0 and last_url and target_stream_url != last_url:
             if last_title and film_title == last_title:
                 old_seconds = last_seconds
@@ -356,11 +349,16 @@ def start_m3u_stream():
             '-threads', DECODER_THREADS,
         ]
 
+        # SEEK PARAMETRESİ (Doğru Konum: ilgili -i parametresinden ÖNCE)
+        # FFmpeg'de giriş seçenekleri kendinden SONRA gelen -i'ye uygulanır.
         seek_args = ['-ss', str(last_seconds)] if last_seconds > 0 else []
 
         if ";" in target_stream_url:
             v_url, a_url = target_stream_url.split(";", 1)
-            input_args = input_options + seek_args + ['-i', v_url.strip()] + input_options + seek_args + ['-i', a_url.strip()]
+            input_args = (
+                input_options + seek_args + ['-i', v_url.strip()] +
+                input_options + seek_args + ['-i', a_url.strip()]
+            )
             audio_map = ['-map', '1:a:0?']
             logo1_input_index = 2
         else:
@@ -371,39 +369,27 @@ def start_m3u_stream():
         print_dashboard(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
 
         has_logo1 = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
-        title_drawtext = f"drawtext=textfile='title.txt':reload=1:fontfile='{BOLD_FONT_PATH}':fontcolor=white@{TEXT_OPACITY}:fontsize=19:x=w-tw-20:y=h-th-20"
-
-        if total_duration_sec > 0:
-            base_remaining = max(0.0, total_duration_sec - last_seconds)
-            rem_expr = f"ceil(max(0\\,{base_remaining:.3f}-t))"
-        else:
-            rem_expr = f"floor({float(last_seconds):.3f}+t)"
-
-        time_text = f"%{{eif\\:floor({rem_expr}/3600)\\:d\\:2}}\\:%{{eif\\:mod(floor({rem_expr}/60)\\,60)\\:d\\:2}}\\:%{{eif\\:mod({rem_expr}\\,60)\\:d\\:2}}"
-        time_drawtext = f"drawtext=text='{time_text}':fontfile='{BOLD_FONT_PATH}':fontcolor=white@{TEXT_OPACITY}:fontsize=18:x=20:y=h-th-20"
+        title_drawtext = f"drawtext=textfile='title.txt':reload=1:fontfile='{BOLD_FONT_PATH}':fontcolor=white@{TEXT_OPACITY}:fontsize=20:x=60:y=h-th-60"
 
         if has_logo1:
             logo_inputs = ['-i', 'logo.png']
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
-                f'[{logo1_input_index}:v]scale=-2:85,format=rgba,colorchannelmixer=aa={LOGO_OPACITY}[logo1];'
-                '[main][logo1]overlay=50:50[tmp1];'
-                f'[tmp1]{title_drawtext}[tmp2];'
-                f'[tmp2]{time_drawtext}[v]'
+                f'[{logo1_input_index}:v]scale=-2:80,format=rgba,colorchannelmixer=aa={LOGO_OPACITY}[logo1];'
+                '[main][logo1]overlay=W-w-50:50[tmp1];'
+                f'[tmp1]{title_drawtext}[v]'
             )
         else:
             logo_inputs = []
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
-                f'[main]{title_drawtext}[tmp2];'
-                f'[tmp2]{time_drawtext}[v]'
+                f'[main]{title_drawtext}[v]'
             )
 
         publisher.ensure_running()
         ts_offset = publisher.clock() + 1.0
 
-        # '-hide_banner' eklendi: hata çıktısında banner yerine gerçek hata satırları görünsün
-        command = ['ffmpeg', '-hide_banner'] + input_args + logo_inputs + [
+        command = ['ffmpeg'] + input_args + logo_inputs + [
             '-filter_complex', filter_str,
             '-map', '[v]'
         ] + audio_map + [
@@ -413,9 +399,6 @@ def start_m3u_stream():
             '-output_ts_offset', f'{ts_offset:.3f}', '-flush_packets', '1',
             '-f', 'mpegts', 'pipe:1'
         ]
-
-        attempt_started_at = time.time()
-        progress_lines_seen = 0
 
         process = subprocess.Popen(
             command,
@@ -433,7 +416,6 @@ def start_m3u_stream():
         current_stream_seconds = last_seconds
         stderr_tail = deque(maxlen=40)
 
-        # WATCHDOG Mantığı (Başlangıç ve Normal Yayın Toleranslı)
         last_progress_time = [time.time()]
         has_started_progress = [False]
 
@@ -462,7 +444,6 @@ def start_m3u_stream():
             if "time=" in line:
                 time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
                 if time_match:
-                    progress_lines_seen += 1
                     hrs, mins, secs = time_match.groups()
                     played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
                     current_stream_seconds = last_seconds + played_seconds
@@ -480,13 +461,10 @@ def start_m3u_stream():
                         write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
                         last_dashboard_time = now
 
-        # ===================== GELİŞMİŞ BİTİŞ VE KOPMA KONTROLÜ =====================
         finished_naturally = (process.returncode == 0) and is_really_finished(current_stream_seconds, total_duration_sec)
 
-        # Hatanın gerçek sebebini görmek için teşhis çıktısı
+        # Hatanın gerçek sebebini görmek için FFmpeg'in son satırlarını yazdır
         if not finished_naturally:
-            attempt_elapsed = time.time() - attempt_started_at
-            print(f"🔎 TEŞHİS: FFmpeg {attempt_elapsed:.1f} sn çalıştı | çıkış kodu: {process.returncode} | okunan ilerleme satırı: {progress_lines_seen} | -ss: {last_seconds}")
             print("---- FFmpeg son satırlar ----")
             print("\n".join(stderr_tail))
             print("-----------------------------")
@@ -501,7 +479,6 @@ def start_m3u_stream():
             update_local_state(current_index, 0, "", "")
             consecutive_fast_failures = 0
         else:
-            # Erken kapanma veya kopma durumu
             if process.returncode == 0:
                 print(f"⚠️ FFmpeg 0 kodu verdi ancak film tamamlanmadı ({format_hms(current_stream_seconds)} / {format_hms(total_duration_sec)}). Erken kopma sayıldı!")
             elif process.returncode == -9:
