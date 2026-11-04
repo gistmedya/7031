@@ -228,25 +228,6 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
         print(f"⚠️ Step summary yazma hatası: {e}")
 
 
-def get_stream_duration(url, headers_arg):
-    try:
-        cmd = [
-            'ffprobe', '-v', 'error',
-            '-headers', headers_arg,
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            url
-        ]
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, text=True)
-        if res.returncode == 0:
-            val = res.stdout.strip()
-            if val and val != "N/A":
-                return float(val)
-    except Exception as e:
-        print(f"⚠️ ffprobe süre sorgulama uyarısı: {e}")
-    return None
-
-
 def start_m3u_stream():
     print(f"🔧 Kullanılan M3U   : {M3U_URL}")
     print(f"🔧 Kullanılan Logo 1: {LOGO_URL}")
@@ -297,23 +278,8 @@ def start_m3u_stream():
             f"Origin: https://vidmody.com\r\n"
         )
 
-        print(f"🔍 Kaynak video süresi ffprobe ile kontrol ediliyor...")
-        media_duration = get_stream_duration(target_stream_url, headers_arg)
-        if media_duration:
-            print(f"⏱️ Filmin Toplam Süresi: {format_hms(media_duration)} ({media_duration:.1f}s)")
-            if last_seconds >= media_duration - 15:
-                print(f"✅ Bu içerik zaten bitmiş görünüyor (Kayıtlı: {last_seconds}s >= Süre: {media_duration:.1f}s). Sıradakine geçiliyor.")
-                current_index += 1
-                last_seconds = 0
-                last_url = ""
-                last_title = ""
-                update_local_state(current_index, 0, "", "")
-                continue
-        else:
-            print(f"⚠️ Filmin toplam süresi ffprobe ile alınamadı, normal akışa devam ediliyor.")
-
-        if media_duration and last_seconds > media_duration:
-            last_seconds = 0
+        # HLS / m3u8 akış kontrolü (seek desteklemez)
+        is_hls = ".m3u8" in target_stream_url or "/vs/" in target_stream_url or "/hls/" in target_stream_url
 
         print("=" * 60)
         print("📺 Maxanimasyon Canlı Aktarım Yayını (1080p 25fps - 2500k) Başlatılıyor")
@@ -335,21 +301,27 @@ def start_m3u_stream():
             '-rw_timeout', '10000000'
         ]
 
-        if ";" in target_stream_url:
-            video_url, audio_url = target_stream_url.split(";", 1)
-            video_url = video_url.strip()
-            audio_url = audio_url.strip()
-
-            input_args = (
-                input_options + ['-re', '-i', video_url] +
-                input_options + ['-re', '-i', audio_url]
-            )
-            audio_map = ['-map', '1:a:0?']
-            logo1_input_index = 2
-        else:
-            input_args = input_options + ['-re', '-i', target_stream_url]
+        if is_hls:
+            print("🌐 HLS / m3u8 Akış algılandı, optimize bayraklar uygulanıyor.")
+            input_args = input_options + ['-i', target_stream_url]
             audio_map = ['-map', '0:a:0?']
             logo1_input_index = 1
+        else:
+            if ";" in target_stream_url:
+                video_url, audio_url = target_stream_url.split(";", 1)
+                video_url = video_url.strip()
+                audio_url = audio_url.strip()
+
+                input_args = (
+                    input_options + ['-re', '-i', video_url] +
+                    input_options + ['-re', '-i', audio_url]
+                )
+                audio_map = ['-map', '1:a:0?']
+                logo1_input_index = 2
+            else:
+                input_args = input_options + ['-re', '-i', target_stream_url]
+                audio_map = ['-map', '0:a:0?']
+                logo1_input_index = 1
 
         print("=" * 60)
 
@@ -374,7 +346,7 @@ def start_m3u_stream():
         if has_logo1:
             logo_inputs = ['-i', 'logo.png']
             filter_str = (
-                '[0:v:0]scale=1920:1080:force_original_aspect_ratio=decrease,'
+                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
                 f'[{logo1_input_index}:v]scale=-2:78,format=rgba,'
                 f'colorchannelmixer=aa={LOGO_OPACITY}[logo1];'
@@ -385,7 +357,7 @@ def start_m3u_stream():
         else:
             logo_inputs = []
             filter_str = (
-                '[0:v:0]scale=1920:1080:force_original_aspect_ratio=decrease,'
+                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
                 f'[main]{title_drawtext}[tmp1];'
                 f'[tmp1]{ticker_drawtext}[v]'
@@ -463,7 +435,8 @@ def start_m3u_stream():
                         last_dashboard_time = now
 
         is_actually_finished = False
-        if media_duration and current_stream_seconds >= media_duration - 15:
+        # HLS akışlarda süre her zaman alınamayabilir, o yüzden oynatılan süreye bakılır
+        if played_seconds > 600: # 10 dakikadan fazla oynadıysa normal bitiş kabul edilebilir
             is_actually_finished = True
 
         if (process.returncode == 0 and played_seconds >= MIN_VALID_MOVIE_DURATION_SECONDS) or is_actually_finished:
