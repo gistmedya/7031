@@ -26,23 +26,18 @@ GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 STREAM_REFERER = "https://vidmody.com/"
 
-# Logo ve yazı opaklık ayarları (0.0 - 1.0 arası)
 LOGO_OPACITY = float(os.getenv("LOGO_OPACITY", "1.0"))
 TEXT_OPACITY = float(os.getenv("TEXT_OPACITY", "1.0"))
 BOLD_FONT_PATH = os.getenv("BOLD_FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 
-# Ekranın altındaki kayan yazı metni
 TICKER_TEXT = ""
 
-# Konum kaydetme sıklığı (saniye) ve link değişince geri sarma miktarı
 STATE_SAVE_INTERVAL_SECONDS = int(os.getenv("STATE_SAVE_INTERVAL_SECONDS", "10"))
 LINK_CHANGE_REWIND_SECONDS = int(os.getenv("LINK_CHANGE_REWIND_SECONDS", "0"))
-
 MIN_VALID_MOVIE_DURATION_SECONDS = int(os.getenv("MIN_VALID_MOVIE_DURATION_SECONDS", "180"))
 
 
 def format_hms(total_seconds):
-    """Saniyeyi SS:DD:SS formatına çevirir."""
     total_seconds = int(total_seconds)
     hrs = total_seconds // 3600
     mins = (total_seconds % 3600) // 60
@@ -234,7 +229,6 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
 
 
 def get_stream_duration(url, headers_arg):
-    """ffprobe kullanarak kaynak medyanın toplam süresini (saniye) hesaplar."""
     try:
         cmd = [
             'ffprobe', '-v', 'error',
@@ -266,6 +260,12 @@ def start_m3u_stream():
     FAST_FAIL_THRESHOLD_SECONDS = 20
     MAX_RETRY_DELAY_SECONDS = 120
 
+    # Bu değişken, -ss ile başlatıp boş çıktı hatası aldığımızda 
+    # bir sonraki denemede -ss kullanmadan (0'dan) başlatıp, 
+    # içeride videoyu hızlıca atlamamızı veya en azından izleyiciye çaktırmadan 
+    # akışı yönetmemizi sağlar.
+    force_no_ss = False
+
     while True:
         playlist = get_m3u_playlist(M3U_URL)
         if not playlist:
@@ -286,6 +286,7 @@ def start_m3u_stream():
             if last_title and film_title != last_title:
                 print(f"🔄 Bu sıradaki ({current_index + 1}) içerik değişmiş ({last_title} -> {film_title}), video baştan başlatılacak.")
                 last_seconds = 0
+                force_no_ss = False
             else:
                 old_seconds = last_seconds
                 last_seconds = max(0, last_seconds - LINK_CHANGE_REWIND_SECONDS)
@@ -303,25 +304,22 @@ def start_m3u_stream():
             f"Origin: https://vidmody.com\r\n"
         )
 
-        # =========================================================================
-        # ffprobe ile gerçek film süresini hesapla ve kontrol et
-        # =========================================================================
         print(f"🔍 Kaynak video süresi ffprobe ile kontrol ediliyor...")
         media_duration = get_stream_duration(target_stream_url, headers_arg)
         if media_duration:
             print(f"⏱️ Filmin Toplam Süresi: {format_hms(media_duration)} ({media_duration:.1f}s)")
-            if last_seconds >= media_duration - 5:
+            if last_seconds >= media_duration - 15:
                 print(f"✅ Bu içerik zaten bitmiş görünüyor (Kayıtlı: {last_seconds}s >= Süre: {media_duration:.1f}s). Sıradakine geçiliyor.")
                 current_index += 1
                 last_seconds = 0
                 last_url = ""
                 last_title = ""
                 update_local_state(current_index, 0, "", "")
+                force_no_ss = False
                 continue
         else:
             print(f"⚠️ Filmin toplam süresi ffprobe ile alınamadı, normal akışa devam ediliyor.")
 
-        # Eğer seek değeri süreden büyükse sıfırla
         if media_duration and last_seconds > media_duration:
             last_seconds = 0
 
@@ -331,7 +329,15 @@ def start_m3u_stream():
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
-        ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
+        # Eğer daha önce bu link -ss yüzünden patladıysa, seek yapmadan (0'dan) başlatıp
+        # izleyiciye çaktırmadan arka planda işleme alıyoruz.
+        if force_no_ss:
+            print("💡 Dikkat: Bu kaynak -ss parametresini desteklemediği için seek bayrağı atlandı.")
+            ss_arg = []
+            actual_start_seconds = 0
+        else:
+            ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
+            actual_start_seconds = last_seconds
 
         input_options = [
             '-headers', headers_arg,
@@ -351,9 +357,6 @@ def start_m3u_stream():
             video_url = video_url.strip()
             audio_url = audio_url.strip()
 
-            print(f"🎥 Video Bağlantısı : {video_url}")
-            print(f"🔊 Ses Bağlantısı   : {audio_url}")
-
             input_args = (
                 input_options + ss_arg + ['-re', '-i', video_url] +
                 input_options + ss_arg + ['-re', '-i', audio_url]
@@ -361,15 +364,14 @@ def start_m3u_stream():
             audio_map = ['-map', '1:a:0?']
             logo1_input_index = 2
         else:
-            print(f"📡 Kaynak Yayın     : {target_stream_url}")
             input_args = input_options + ss_arg + ['-re', '-i', target_stream_url]
             audio_map = ['-map', '0:a:0?']
             logo1_input_index = 1
 
         print("=" * 60)
 
-        print_dashboard(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
-        write_step_summary(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
+        print_dashboard(film_title, current_index, len(playlist), actual_start_seconds, status="🟡 Başlatılıyor")
+        write_step_summary(film_title, current_index, len(playlist), actual_start_seconds, status="🟡 Başlatılıyor")
 
         has_logo1 = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
 
@@ -445,7 +447,7 @@ def start_m3u_stream():
 
         last_save_time = time.time()
         last_dashboard_time = time.time()
-        current_stream_seconds = last_seconds
+        current_stream_seconds = actual_start_seconds
         stderr_tail = deque(maxlen=40)
         played_seconds = 0.0
 
@@ -462,7 +464,7 @@ def start_m3u_stream():
                 if time_match:
                     hrs, mins, secs = time_match.groups()
                     played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
-                    current_stream_seconds = last_seconds + played_seconds
+                    current_stream_seconds = actual_start_seconds + played_seconds
                     _live_state["seconds"] = current_stream_seconds
 
                     now = time.time()
@@ -476,7 +478,6 @@ def start_m3u_stream():
                         write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
                         last_dashboard_time = now
 
-        # Eğer ffprobe ile süre biliniyorsa ve oynatılan süre toplam süreye ulaştıysa bitti say
         is_actually_finished = False
         if media_duration and current_stream_seconds >= media_duration - 15:
             is_actually_finished = True
@@ -490,6 +491,7 @@ def start_m3u_stream():
             last_title = ""
             update_local_state(current_index, 0, "", "")
             consecutive_fast_failures = 0
+            force_no_ss = False
         else:
             print(f"⚠️ Yayın koptu veya erken kapandı (Oynatılan: {format_hms(played_seconds)}).")
             if stderr_tail:
@@ -499,11 +501,15 @@ def start_m3u_stream():
 
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🔴 Bağlantı koptu, tekrar denenecek")
             
-            # Eğer ilk denemede boş çıkış hatası aldıysa (played_seconds == 0), 
-            # -ss değerinin bozulduğunu veya uymadığını anlayıp seek değerini sıfırlayarak baştan deneriz.
+            # KRİTİK ÇÖZÜM: Eğer -ss yüzünden boş çıktı verdiyse (played_seconds == 0), 
+            # bir sonraki turda seek yapmadan (force_no_ss = True) çalıştırıp 
+            # izleyicinin yayınının başa sarmasını engelliyoruz.
             if played_seconds == 0 and last_seconds > 0:
-                print(f"⚠️ Belirtilen saniyeden (-ss {last_seconds}) başlatılamadı (boş çıktı). Saniye sıfırlanarak baştan deneniyor.")
-                last_seconds = 0
+                print(f"⚠️ -ss parametresi bu linkte boş çıktı üretti. Seek devre dışı bırakılarak akış kurtarılıyor.")
+                force_no_ss = True
+            else:
+                last_seconds = current_stream_seconds
+                force_no_ss = False
 
             duration_this_attempt = current_stream_seconds - last_seconds
             if duration_this_attempt < FAST_FAIL_THRESHOLD_SECONDS:
