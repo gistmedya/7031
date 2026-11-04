@@ -260,7 +260,10 @@ def start_m3u_stream():
     FAST_FAIL_THRESHOLD_SECONDS = 20
     MAX_RETRY_DELAY_SECONDS = 120
 
-    force_no_ss = False
+    # Bu sözlük, hangi URL'nin -ss parametresini desteklemediğini hafızada tutar.
+    # Böylece aynı film tekrar koptuğunda veya yeniden başladığında baştan -ss denemek yerine
+    # direkt 0 saniye ile (ama state'i bozmadan) hatasız başlatır.
+    no_ss_urls = set()
 
     while True:
         playlist = get_m3u_playlist(M3U_URL)
@@ -282,7 +285,6 @@ def start_m3u_stream():
             if last_title and film_title != last_title:
                 print(f"🔄 Bu sıradaki ({current_index + 1}) içerik değişmiş ({last_title} -> {film_title}), video baştan başlatılacak.")
                 last_seconds = 0
-                force_no_ss = False
             else:
                 old_seconds = last_seconds
                 last_seconds = max(0, last_seconds - LINK_CHANGE_REWIND_SECONDS)
@@ -311,7 +313,6 @@ def start_m3u_stream():
                 last_url = ""
                 last_title = ""
                 update_local_state(current_index, 0, "", "")
-                force_no_ss = False
                 continue
         else:
             print(f"⚠️ Filmin toplam süresi ffprobe ile alınamadı, normal akışa devam ediliyor.")
@@ -323,11 +324,12 @@ def start_m3u_stream():
         print("📺 Maxanimasyon Canlı Aktarım Yayını (1080p 25fps - 2500k) Başlatılıyor")
         print(f"🎬 Oynatılan İçerik  : {film_title}")
         
-        # Eğer force_no_ss aktifse saniyeyi 0 yapıp logta da net gösteriyoruz
-        if force_no_ss:
-            print("💡 Dikkat: Bu kaynak -ss parametresini desteklemediği için seek bayrağı atlandı (0'dan başlatılıyor).")
+        # Eğer bu URL daha önce -ss yüzünden patladıysa, seek yapmıyoruz ama 
+        # state'deki saniyeyi (last_seconds) koruyarak yayını başlatıyoruz!
+        if target_stream_url in no_ss_urls:
+            print("💡 Dikkat: Bu kaynak -ss desteklemiyor. Seek atlanıyor, ancak kaldığı yer korunuyor.")
             ss_arg = []
-            actual_start_seconds = 0
+            actual_start_seconds = last_seconds
         else:
             ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
             actual_start_seconds = last_seconds
@@ -487,7 +489,6 @@ def start_m3u_stream():
             last_title = ""
             update_local_state(current_index, 0, "", "")
             consecutive_fast_failures = 0
-            force_no_ss = False
         else:
             print(f"⚠️ Yayın koptu veya erken kapandı (Oynatılan: {format_hms(played_seconds)}).")
             if stderr_tail:
@@ -498,16 +499,14 @@ def start_m3u_stream():
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🔴 Bağlantı koptu, tekrar denenecek")
             
             # Eğer ilk denemede boş çıktı aldıysak (played_seconds == 0), 
-            # -ss parametresinin bu linke uymadığını anlıyoruz ve force_no_ss = True yapıyoruz.
+            # bu linkin -ss desteklemediğini kaydediyoruz (no_ss_urls listesine ekliyoruz).
+            # Böylece state'deki saniyeyi (last_seconds) sıfırlamadan, olduğu gibi koruyarak 
+            # bir sonraki turda seek yapmadan (0'dan akıtarak ama state'i bozmadan) devam ediyoruz.
             if played_seconds == 0 and last_seconds > 0:
-                print(f"⚠️ -ss parametresi bu linkte boş çıktı üretti. Seek devre dışı bırakılarak akış kurtarılıyor.")
-                force_no_ss = True
-                # Dikkat: force_no_ss true olduğunda last_seconds'ı sıfırlıyoruz ki 
-                # sonraki turda tekrar -ss ile başlatmaya çalışmasın!
-                last_seconds = 0
+                print(f"⚠️ -ss parametresi bu linkte boş çıktı üretti. Bu URL için seek kalıcı olarak devre dışı bırakılıyor.")
+                no_ss_urls.add(target_stream_url)
             else:
                 last_seconds = current_stream_seconds
-                force_no_ss = False
 
             duration_this_attempt = current_stream_seconds - last_seconds
             if duration_this_attempt < FAST_FAIL_THRESHOLD_SECONDS:
