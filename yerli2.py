@@ -38,6 +38,10 @@ TICKER_TEXT = ""
 STATE_SAVE_INTERVAL_SECONDS = int(os.getenv("STATE_SAVE_INTERVAL_SECONDS", "10"))
 LINK_CHANGE_REWIND_SECONDS = int(os.getenv("LINK_CHANGE_REWIND_SECONDS", "0"))
 
+# Bir filmin normal bitmiş sayılması için o ana kadar geçen minimum süre (Saniye).
+# Örn: 3 dakikadan (180s) kısa süren kapanışlar "bitiş" değil "ağ kopması" sayılır.
+MIN_VALID_MOVIE_DURATION_SECONDS = int(os.getenv("MIN_VALID_MOVIE_DURATION_SECONDS", "180"))
+
 
 def format_hms(total_seconds):
     """Saniyeyi SS:DD:SS formatına çevirir."""
@@ -286,8 +290,6 @@ def start_m3u_stream():
         target_stream_url = current_item["url"]
         film_title = current_item["title"]
 
-        # Link değişmiş olabilir (token/süre dolumu). Aynı film ise kaldığı yerden devam et,
-        # farklı bir film olduysa (liste değişmiş) baştan başlat.
         if last_seconds > 0 and last_url and target_stream_url != last_url:
             if last_title and film_title != last_title:
                 print(f"🔄 Bu sıradaki ({current_index + 1}) içerik değişmiş ({last_title} -> {film_title}), video baştan başlatılacak.")
@@ -296,8 +298,6 @@ def start_m3u_stream():
                 old_seconds = last_seconds
                 last_seconds = max(0, last_seconds - LINK_CHANGE_REWIND_SECONDS)
                 print(f"🔄 İçerik linki yenilenmiş, aynı film. {old_seconds}s yerine {last_seconds}s'den devam edilecek.")
-                print(f"   Eski link: {last_url}")
-                print(f"   Yeni link: {target_stream_url}")
 
         last_url = target_stream_url
         last_title = film_title
@@ -359,14 +359,12 @@ def start_m3u_stream():
 
         has_logo1 = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
 
-        # Film başlığı yazısı (Kayan yazının üstünde hizalandı)
         title_drawtext = (
             f"drawtext=textfile='title.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
             f"fontcolor=white@{TEXT_OPACITY}:fontsize=23:"
             f"x=50:y=main_h-th-50"
         )
 
-        # Kayan yazı ve siyah arka plan bandı
         ticker_drawtext = (
             f"drawtext=text='{TICKER_TEXT}':fontfile='{BOLD_FONT_PATH}':"
             f"fontcolor=white:fontsize=0:"
@@ -394,11 +392,7 @@ def start_m3u_stream():
                 f'[tmp1]{ticker_drawtext}[v]'
             )
 
-        # Kalıcı yayıncı ölmüşse (gerçek bir kopma) yeniden başlat
         publisher.ensure_running()
-
-        # Zaman damgaları filmler arasında kesintisiz ilerlesin diye
-        # yayıncının başlangıcından beri geçen gerçek süre kadar kaydırılır.
         ts_offset = publisher.clock() + 1.0
 
         command = [
@@ -429,7 +423,7 @@ def start_m3u_stream():
 
         process = subprocess.Popen(
             command,
-            stdout=publisher.proc.stdin,   # Çıktı kalıcı yayıncıya akar; bu süreç bitince boru kapanmaz
+            stdout=publisher.proc.stdin,
             stderr=subprocess.PIPE,
             universal_newlines=True
         )
@@ -439,6 +433,7 @@ def start_m3u_stream():
         last_dashboard_time = time.time()
         current_stream_seconds = last_seconds
         stderr_tail = deque(maxlen=40)
+        played_seconds = 0.0
 
         while True:
             line = process.stderr.readline()
@@ -467,8 +462,14 @@ def start_m3u_stream():
                         write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
                         last_dashboard_time = now
 
-        if process.returncode == 0:
-            print("✅ İçerik bitti, sıradakine geçiliyor.")
+        # =========================================================================
+        # KRİTİK DÜZELTME BURASI:
+        # FFmpeg 0 döndüyse bile, oynatılan süre çok kısaysa bu gerçek bir film bitişi 
+        # DEĞİLDİR; harici CDN/ağ kopmasıdır. Bu yüzden sıradakine geçmek yerine kaldığı 
+        # yerden devam etmesini sağlıyoruz.
+        # =========================================================================
+        if process.returncode == 0 and played_seconds >= MIN_VALID_MOVIE_DURATION_SECONDS:
+            print(f"✅ İçerik bitti ({format_hms(played_seconds)} oynatıldı), sıradakine geçiliyor.")
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="✅ Bitti, sıradakine geçiliyor")
             current_index += 1
             last_seconds = 0
@@ -477,17 +478,24 @@ def start_m3u_stream():
             update_local_state(current_index, 0, "", "")
             consecutive_fast_failures = 0
         else:
-            print(f"⚠️ Yayın koptu (Return Code: {process.returncode}). Aynı saniyeden tekrar denenecek.")
+            if process.returncode == 0:
+                print(f"⚠️ FFmpeg 0 döndü ancak içerik çok kısa sürdü ({format_hms(played_seconds)}). Gerçek bitiş değil, ağ kopması olarak değerlendirilip kaldığı yerden devam edilecek.")
+            else:
+                print(f"⚠️ Yayın koptu (Return Code: {process.returncode}). Aynı saniyeden tekrar denenecek.")
+
             if stderr_tail:
                 print("🧾 FFmpeg son log satırları:")
                 for tail_line in stderr_tail:
                     print(f"   {tail_line}")
-            write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🔴 Bağlantı koptu, tekrar denenecek")
+
+            write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🔴 Bağlantı koptu / Erken kapanma, tekrar denenecek")
+            
             duration_this_attempt = current_stream_seconds - last_seconds
             if duration_this_attempt < FAST_FAIL_THRESHOLD_SECONDS:
                 consecutive_fast_failures += 1
             else:
                 consecutive_fast_failures = 0
+
             last_seconds = current_stream_seconds
             last_url = target_stream_url
             last_title = film_title
