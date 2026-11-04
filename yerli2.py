@@ -301,9 +301,8 @@ def start_m3u_stream():
         ]
 
         if is_hls:
-            print("🌐 HLS / m3u8 Çoklu Akış algılandı, optimize bayraklar uygulanıyor.")
-            # HLS akışlarında en yüksek kaliteli programı (Program 0) zorunlu kılıyoruz
-            input_args = input_options + ['-progs', '0'] + ['-i', target_stream_url]
+            print("🌐 HLS / m3u8 Akış algılandı, optimize bayraklar uygulanıyor.")
+            input_args = input_options + ['-i', target_stream_url]
             audio_map = ['-map', '0:a:0?']
             logo1_input_index = 1
         else:
