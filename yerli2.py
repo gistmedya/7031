@@ -278,7 +278,6 @@ def start_m3u_stream():
             f"Origin: https://vidmody.com\r\n"
         )
 
-        # HLS / m3u8 akış kontrolü (seek desteklemez)
         is_hls = ".m3u8" in target_stream_url or "/vs/" in target_stream_url or "/hls/" in target_stream_url
 
         print("=" * 60)
@@ -292,8 +291,8 @@ def start_m3u_stream():
             '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
             '-err_detect', 'ignore_err',
             '-allowed_extensions', 'ALL',
-            '-analyzeduration', '10000000',
-            '-probesize', '10000000',
+            '-analyzeduration', '50000000',
+            '-probesize', '50000000',
             '-reconnect', '1',
             '-reconnect_at_eof', '1',
             '-reconnect_streamed', '1',
@@ -302,8 +301,9 @@ def start_m3u_stream():
         ]
 
         if is_hls:
-            print("🌐 HLS / m3u8 Akış algılandı, optimize bayraklar uygulanıyor.")
-            input_args = input_options + ['-i', target_stream_url]
+            print("🌐 HLS / m3u8 Çoklu Akış algılandı, optimize bayraklar uygulanıyor.")
+            # HLS akışlarında en yüksek kaliteli programı (Program 0) zorunlu kılıyoruz
+            input_args = input_options + ['-progs', '0'] + ['-i', target_stream_url]
             audio_map = ['-map', '0:a:0?']
             logo1_input_index = 1
         else:
@@ -435,8 +435,7 @@ def start_m3u_stream():
                         last_dashboard_time = now
 
         is_actually_finished = False
-        # HLS akışlarda süre her zaman alınamayabilir, o yüzden oynatılan süreye bakılır
-        if played_seconds > 600: # 10 dakikadan fazla oynadıysa normal bitiş kabul edilebilir
+        if played_seconds > 600:
             is_actually_finished = True
 
         if (process.returncode == 0 and played_seconds >= MIN_VALID_MOVIE_DURATION_SECONDS) or is_actually_finished:
