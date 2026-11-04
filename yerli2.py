@@ -38,6 +38,13 @@ TICKER_TEXT = ""
 STATE_SAVE_INTERVAL_SECONDS = int(os.getenv("STATE_SAVE_INTERVAL_SECONDS", "10"))
 LINK_CHANGE_REWIND_SECONDS = int(os.getenv("LINK_CHANGE_REWIND_SECONDS", "0"))
 
+# Filmin bittiğini kabul etmek için sona kalan en fazla süre (saniye)
+END_TOLERANCE_SECONDS = int(os.getenv("END_TOLERANCE_SECONDS", "45"))
+# Hiç ilerleme olmadan art arda kaç deneme sonrası filmi baştan başlatalım
+MAX_NOPROGRESS_RETRIES = int(os.getenv("MAX_NOPROGRESS_RETRIES", "3"))
+# ffprobe ile süre okunamazsa, "bitti" saymak için gereken en az oynatma süresi (saniye)
+MIN_PLAY_FOR_UNKNOWN_DURATION = 60
+
 
 def format_hms(total_seconds):
     """Saniyeyi SS:DD:SS formatına çevirir."""
@@ -122,6 +129,9 @@ publisher = RtmpPublisher()
 
 # Anlık konum bilgisi (kapanırken / iptal edilirken son konumu kaydetmek için)
 _live_state = {"index": 0, "seconds": 0, "url": "", "title": "", "proc": None}
+
+# URL -> film süresi önbelleği (ffprobe'u her denemede tekrar çalıştırmamak için)
+_duration_cache = {}
 
 
 def get_local_state():
@@ -227,6 +237,36 @@ def write_title_file(title):
         print(f"⚠️ Başlık dosyası yazma hatası: {e}")
 
 
+def get_duration(url, headers_arg):
+    """Filmin toplam süresini ffprobe ile okur (saniye). Okunamazsa None döner."""
+    if url in _duration_cache:
+        return _duration_cache[url]
+    try:
+        r = subprocess.run(
+            ['ffprobe', '-v', 'error', '-headers', headers_arg,
+             '-show_entries', 'format=duration',
+             '-of', 'default=nw=1:nk=1', url],
+            capture_output=True, text=True, timeout=40
+        )
+        value = float(r.stdout.strip())
+        if value > 0:
+            _duration_cache[url] = value
+            return value
+    except Exception:
+        pass
+    return None
+
+
+def ffmpeg_supports_readrate_burst():
+    """FFmpeg'in -readrate_initial_burst seçeneğini destekleyip desteklemediğini kontrol eder (6.1+)."""
+    try:
+        r = subprocess.run(['ffmpeg', '-hide_banner', '-h', 'full'],
+                           capture_output=True, text=True, timeout=30)
+        return 'readrate_initial_burst' in (r.stdout + r.stderr)
+    except Exception:
+        return False
+
+
 def print_dashboard(title, index, playlist_len, seconds, status="🟢 Yayında"):
     print("┌" + "─" * 58 + "┐")
     print(f"│ 🎬 İçerik         : {title[:36]:<36} │")
@@ -264,11 +304,17 @@ def start_m3u_stream():
 
     download_logo()
 
+    output_seek_available = ffmpeg_supports_readrate_burst()
+    print(f"🔧 Output seek desteği: {'var' if output_seek_available else 'yok (FFmpeg 6.1+ gerekir)'}")
+
     current_index, last_seconds, last_url, last_title = get_local_state()
 
     consecutive_fast_failures = 0
     FAST_FAIL_THRESHOLD_SECONDS = 20
     MAX_RETRY_DELAY_SECONDS = 120
+
+    noprogress_retries = 0
+    seek_mode = "input"   # "input": -ss girişte (hızlı, Range ister) | "output": -ss çıkışta (yavaş ama Range gerekmez)
 
     while True:
         playlist = get_m3u_playlist(M3U_URL)
@@ -292,6 +338,8 @@ def start_m3u_stream():
             if last_title and film_title != last_title:
                 print(f"🔄 Bu sıradaki ({current_index + 1}) içerik değişmiş ({last_title} -> {film_title}), video baştan başlatılacak.")
                 last_seconds = 0
+                seek_mode = "input"
+                noprogress_retries = 0
             else:
                 old_seconds = last_seconds
                 last_seconds = max(0, last_seconds - LINK_CHANGE_REWIND_SECONDS)
@@ -309,6 +357,7 @@ def start_m3u_stream():
         print("📺 Maxanimasyon Canlı Aktarım Yayını (1080p 25fps - 2500k) Başlatılıyor")
         print(f"🎬 Oynatılan İçerik  : {film_title}")
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
+        print(f"🔎 Seek yöntemi     : {seek_mode}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
         headers_arg = (
@@ -317,7 +366,15 @@ def start_m3u_stream():
             f"Origin: https://vidmody.com\r\n"
         )
 
-        ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
+        # Seek yöntemine göre giriş/çıkış argümanları
+        if seek_mode == "output" and last_seconds > 0 and output_seek_available:
+            ss_arg = []
+            out_ss = ['-ss', str(int(last_seconds))]
+            rate_arg = ['-readrate', '1', '-readrate_initial_burst', str(int(last_seconds) + 10)]
+        else:
+            ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
+            out_ss = []
+            rate_arg = ['-re']
 
         input_options = [
             '-headers', headers_arg,
@@ -341,16 +398,22 @@ def start_m3u_stream():
             print(f"🔊 Ses Bağlantısı   : {audio_url}")
 
             input_args = (
-                input_options + ss_arg + ['-re', '-i', video_url] +
-                input_options + ss_arg + ['-re', '-i', audio_url]
+                input_options + ss_arg + rate_arg + ['-i', video_url] +
+                input_options + ss_arg + rate_arg + ['-i', audio_url]
             )
             audio_map = ['-map', '1:a:0?']
             logo1_input_index = 2
+            probe_url = video_url
         else:
             print(f"📡 Kaynak Yayın     : {target_stream_url}")
-            input_args = input_options + ss_arg + ['-re', '-i', target_stream_url]
+            input_args = input_options + ss_arg + rate_arg + ['-i', target_stream_url]
             audio_map = ['-map', '0:a:0?']
             logo1_input_index = 1
+            probe_url = target_stream_url
+
+        # Filmin gerçek süresini öğren (erken bitişi ayırt etmek için)
+        film_duration = get_duration(probe_url, headers_arg)
+        print(f"⏳ Film süresi      : {format_hms(film_duration) if film_duration else 'bilinmiyor'}")
 
         print("=" * 60)
 
@@ -406,7 +469,7 @@ def start_m3u_stream():
         ] + input_args + logo_inputs + [
             '-filter_complex', filter_str,
             '-map', '[v]'
-        ] + audio_map + [
+        ] + audio_map + out_ss + [
             '-c:v', 'libx264',
             '-preset', 'veryfast',
             '-pix_fmt', 'yuv420p',
@@ -467,8 +530,18 @@ def start_m3u_stream():
                         write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
                         last_dashboard_time = now
 
-        if process.returncode == 0:
-            print("✅ İçerik bitti, sıradakine geçiliyor.")
+        # ---------- Film gerçekten bitti mi? ----------
+        played_this_attempt = current_stream_seconds - last_seconds
+
+        if film_duration:
+            # Süre biliniyorsa: sadece sona yakınsa bitti say (çıkış kodu ne olursa olsun)
+            really_finished = current_stream_seconds >= film_duration - END_TOLERANCE_SECONDS
+        else:
+            # Süre bilinmiyorsa: temiz çıkış + yeterince oynamışsa bitti say
+            really_finished = (process.returncode == 0 and played_this_attempt >= MIN_PLAY_FOR_UNKNOWN_DURATION)
+
+        if really_finished:
+            print("✅ İçerik gerçekten bitti, sıradakine geçiliyor.")
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="✅ Bitti, sıradakine geçiliyor")
             current_index += 1
             last_seconds = 0
@@ -476,19 +549,43 @@ def start_m3u_stream():
             last_title = ""
             update_local_state(current_index, 0, "", "")
             consecutive_fast_failures = 0
+            noprogress_retries = 0
+            seek_mode = "input"
         else:
-            print(f"⚠️ Yayın koptu (Return Code: {process.returncode}). Aynı saniyeden tekrar denenecek.")
+            if process.returncode == 0:
+                print(f"⚠️ FFmpeg erken çıktı (RC 0) ama film bitmedi "
+                      f"({format_hms(current_stream_seconds)} / {format_hms(film_duration) if film_duration else '?'}). "
+                      f"Aynı yerden tekrar denenecek.")
+            else:
+                print(f"⚠️ Yayın koptu (Return Code: {process.returncode}). Aynı saniyeden tekrar denenecek.")
             if stderr_tail:
                 print("🧾 FFmpeg son log satırları:")
                 for tail_line in stderr_tail:
                     print(f"   {tail_line}")
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🔴 Bağlantı koptu, tekrar denenecek")
-            duration_this_attempt = current_stream_seconds - last_seconds
-            if duration_this_attempt < FAST_FAIL_THRESHOLD_SECONDS:
+
+            if played_this_attempt < FAST_FAIL_THRESHOLD_SECONDS:
                 consecutive_fast_failures += 1
             else:
                 consecutive_fast_failures = 0
+
+            if played_this_attempt < 1:
+                noprogress_retries += 1
+            else:
+                noprogress_retries = 0
+
             last_seconds = current_stream_seconds
+
+            # Hiç ilerleme yoksa: önce output seek dene, o da olmazsa filmi baştan başlat
+            if noprogress_retries >= 1 and seek_mode == "input" and last_seconds > 0 and output_seek_available:
+                print("🔁 Input seek çalışmadı, output seek ile denenecek.")
+                seek_mode = "output"
+            elif noprogress_retries >= MAX_NOPROGRESS_RETRIES:
+                print("🔁 Bu saniyeye atlanamıyor, film baştan başlatılacak.")
+                last_seconds = 0
+                seek_mode = "input"
+                noprogress_retries = 0
+
             last_url = target_stream_url
             last_title = film_title
             update_local_state(current_index, last_seconds, last_url, film_title)
