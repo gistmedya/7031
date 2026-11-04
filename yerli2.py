@@ -18,7 +18,7 @@ STREAM_KEY = os.getenv("STREAM_KEY") or "maxyerli"
 RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 
 M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/yerli2.m3u"
-LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/Maxyerli1.png"
+LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/maxyerli2.png"
 
 STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "yesilcam.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
@@ -379,9 +379,9 @@ def start_m3u_stream():
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
-                f'[{logo1_input_index}:v]scale=-2:80,format=rgba,'
+                f'[{logo1_input_index}:v]scale=-2:78,format=rgba,'
                 f'colorchannelmixer=aa={LOGO_OPACITY}[logo1];'
-                '[main][logo1]overlay=main_w-overlay_w-50:50[tmp1];'
+                '[main][logo1]overlay=main_w-overlay_w-55:60[tmp1];'
                 f'[tmp1]{title_drawtext}[tmp2];'
                 f'[tmp2]{ticker_drawtext}[v]'
             )
