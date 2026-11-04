@@ -260,10 +260,6 @@ def start_m3u_stream():
     FAST_FAIL_THRESHOLD_SECONDS = 20
     MAX_RETRY_DELAY_SECONDS = 120
 
-    # Bu değişken, -ss ile başlatıp boş çıktı hatası aldığımızda 
-    # bir sonraki denemede -ss kullanmadan (0'dan) başlatıp, 
-    # içeride videoyu hızlıca atlamamızı veya en azından izleyiciye çaktırmadan 
-    # akışı yönetmemizi sağlar.
     force_no_ss = False
 
     while True:
@@ -326,18 +322,18 @@ def start_m3u_stream():
         print("=" * 60)
         print("📺 Maxanimasyon Canlı Aktarım Yayını (1080p 25fps - 2500k) Başlatılıyor")
         print(f"🎬 Oynatılan İçerik  : {film_title}")
-        print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
-        print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
-
-        # Eğer daha önce bu link -ss yüzünden patladıysa, seek yapmadan (0'dan) başlatıp
-        # izleyiciye çaktırmadan arka planda işleme alıyoruz.
+        
+        # Eğer force_no_ss aktifse saniyeyi 0 yapıp logta da net gösteriyoruz
         if force_no_ss:
-            print("💡 Dikkat: Bu kaynak -ss parametresini desteklemediği için seek bayrağı atlandı.")
+            print("💡 Dikkat: Bu kaynak -ss parametresini desteklemediği için seek bayrağı atlandı (0'dan başlatılıyor).")
             ss_arg = []
             actual_start_seconds = 0
         else:
             ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
             actual_start_seconds = last_seconds
+
+        print(f"⏱️ Başlangıç Saniyesi: {actual_start_seconds}")
+        print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
         input_options = [
             '-headers', headers_arg,
@@ -501,12 +497,14 @@ def start_m3u_stream():
 
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🔴 Bağlantı koptu, tekrar denenecek")
             
-            # KRİTİK ÇÖZÜM: Eğer -ss yüzünden boş çıktı verdiyse (played_seconds == 0), 
-            # bir sonraki turda seek yapmadan (force_no_ss = True) çalıştırıp 
-            # izleyicinin yayınının başa sarmasını engelliyoruz.
+            # Eğer ilk denemede boş çıktı aldıysak (played_seconds == 0), 
+            # -ss parametresinin bu linke uymadığını anlıyoruz ve force_no_ss = True yapıyoruz.
             if played_seconds == 0 and last_seconds > 0:
                 print(f"⚠️ -ss parametresi bu linkte boş çıktı üretti. Seek devre dışı bırakılarak akış kurtarılıyor.")
                 force_no_ss = True
+                # Dikkat: force_no_ss true olduğunda last_seconds'ı sıfırlıyoruz ki 
+                # sonraki turda tekrar -ss ile başlatmaya çalışmasın!
+                last_seconds = 0
             else:
                 last_seconds = current_stream_seconds
                 force_no_ss = False
